@@ -1,0 +1,669 @@
+function xpm2xyzmat {
+	awk -v dat=$dat ' BEGIN{ isHB=0; ny=0; ix=1; iy=1 }
+
+	/Hydrogen Bonds/ { isHB=1; next }
+
+	/gromacs_xpm/ {
+		getline; gsub(/"/, "");
+		nlev=$3; ncode=$4 # 每种颜色编码字符数
+		for(i=1; i<=nlev; i++) {
+			getline
+			if(isHB) {
+				v[" "]=0; v["o"]=1
+			} else {
+				gsub(/[",\n\r]/, "")
+				v[$1]=$5   # 编码代表数值
+			}
+		}
+		next
+	}
+
+	/^"/ { sub(/^"/,""); sub(/",$/,"");
+		zv[ny++]=$0  # 数据颜色编码
+	}
+
+	/\/\* x-axis/ && ix { x0=$3; dx=$4-x0; ix=0 }
+	/\/\* y-axis/ && iy { y0=$3; dy=$4-y0; iy=0 }
+
+	END {
+		nx=length(zv[1])/ncode
+		if(index(dat, "xyz")) {
+			print "#    Nx="nx"    Ny="ny"    X0="x0"    dX="dx"    Y0="y0"    dY="dy
+			print "#    x            y            z"
+		}
+		for(j=0; j<ny; j++) {
+			y = y0+j*dy
+			for(i=0; i<nx; i++) {
+				x = x0+i*dx
+				txt=substr(zv[ny-1-j], i*ncode+1, ncode)
+				if(index(dat, "mat")) printf "%12.6f", v[txt]
+				if(index(dat, "xyz")) printf "%12.6f %12.6f %12.6f\n", x, y, v[txt]
+			}
+			print ""
+		}
+	} ' $file.xpm > $file~.$dat
+}
+
+function xpm2gpl {
+#	G = "3-Helix"  3-turn helix (3/10 helix). Min length 3 residues.
+#	H = "A-Helix"  4-turn helix (α helix).   Min length 4 residues.
+#	I = "5-Helix"  5-turn helix (π helix).   Min length 5 residues.
+#	B = "B-Bridge" beta-bridge residue. residue in isolated β-bridge (single pair β-sheet hydrogen bond formation)
+#	E = "B-Sheet"  extended strand (in beta ladder) in parallel and/or anti-parallel β-sheet conformation. Min length 2 residues.
+#	T = "Turn"     H-bonded turn (3, 4 or 5 turn)
+#	S = "Bend"     bend (the only non-hydrogen-bond based assignment)
+#	~ = "Coil"     C, loops/coil (residues which are not in any of the above conformations)
+
+	awk -v file=$file -v minRes=$minRes -v maxRes=$maxRes -v yminRes=$yminRes \
+		-v ssmode=$ssmode -v color=$color ' BEGIN{
+		xyz=0; if(ssmode=="xyz") xyz=1;
+		fx=.5; if(ssmode=="box") fx=1;
+		ny=0; ix=1; iy=1;
+		vss["Chain_Separator"]=0;
+		vss["A-Helix" ]= 8;  c["A-Helix" ,"gmx"]= "#0000FF"
+		vss["3-Helix" ]= 7;  c["3-Helix" ,"gmx"]= "#808080"
+		vss["5-Helix" ]= 6;  c["5-Helix" ,"gmx"]= "#800080"
+		vss["B-Sheet" ]= 5;  c["B-Sheet" ,"gmx"]= "#FF0000"
+		vss["B-Bridge"]= 4;  c["B-Bridge","gmx"]= "#000000"
+		vss["Turn"    ]= 3;  c["Turn"    ,"gmx"]= "#FFFF00"
+		vss["Bend"    ]= 2;  c["Bend"    ,"gmx"]= "#008000"
+		vss["Coil"    ]= 1;  c["Coil"    ,"gmx"]= "#BBBBBB"
+
+		c["A-Helix" ,"pdb"]="#E53535"; c["A-Helix" ,"vmd"]="#E182E1";
+		c["3-Helix" ,"pdb"]="#EC6262"; c["3-Helix" ,"vmd"]="#FFA0FF";
+		c["5-Helix" ,"pdb"]="#F28E8E"; c["5-Helix" ,"vmd"]="#E11414";
+		c["B-Sheet" ,"pdb"]="#FFF000"; c["B-Sheet" ,"vmd"]="#FFFF64";
+		c["B-Bridge","pdb"]="#D4A800"; c["B-Bridge","vmd"]="#B4B400";
+		c["Turn"    ,"pdb"]="#00B266"; c["Turn"    ,"vmd"]="#469696";
+		c["Bend"    ,"pdb"]="#00CC00"; c["Bend"    ,"vmd"]="#00CC00";
+		c["Coil"    ,"pdb"]="#000000"; c["Coil"    ,"vmd"]="#000000";
+#		p1: 10.1371/journal.pone.0178333
+#		p2: 10.1371/journal.pcbi.1007487
+		c["A-Helix" ,"p1"]="#00FF00"; c["A-Helix" ,"p2"]="#0171B6"
+		c["3-Helix" ,"p1"]="#2E8B57"; c["3-Helix" ,"p2"]="#D16000"
+		c["5-Helix" ,"p1"]="#008000"; c["5-Helix" ,"p2"]="#FCAEE5"
+		c["B-Sheet" ,"p1"]="#0000FF"; c["B-Sheet" ,"p2"]="#019E73"
+		c["B-Bridge","p1"]="#3399FF"; c["B-Bridge","p2"]="#CA9261"
+		c["Turn"    ,"p1"]="#FF8C00"; c["Turn"    ,"p2"]="#C99260"
+		c["Bend"    ,"p1"]="#FF0000"; c["Bend"    ,"p2"]="#F8B0E7"
+		c["Coil"    ,"p1"]="#000000"; c["Coil"    ,"p2"]="#000000"
+
+		c["Chain_Separator","gmx"]="#E6E6E6"
+		c["Chain_Separator","pdb"]="#FFFFFF"; c["Chain_Separator","vmd"]="#FFFFFF"
+		c["Chain_Separator","p1" ]="#FFFFFF"; c["Chain_Separator","p2" ]="#FFFFFF"
+	}
+
+	/^"/ {
+		gsub(/[",\n\r]/, "")
+		n=split($0, arr)
+		if(n==1)      { zv[ny++]=$0} # 数据颜色编码
+		else if(n==4) { ncode=$NF  } # 每种颜色编码字符数
+		else if(n>4)  { v[$1]=$5;  } # 编码代表数值xyz?vss[$5]:$5
+	}
+
+	/x-label:/ { sub(/.*\(/,""); sub(/).*/,""); xu=$0 }
+	/\/\* x-axis/ && ix { x0=$3; dx=$4-x0; ix=0 }
+	/\/\* y-axis/ && iy { y0=$3; dy=$4-y0; iy=0; y0=yminRes }
+
+	END { Pi=4*atan2(1,1)
+		if(ny<maxRes) maxRes=ny
+		nx=length(zv[1])/ncode
+
+		if(xyz) {
+			print "unset colorbox"
+			printf "set pal defined("
+			for(n=0; n<=7; n++) {
+				for(i in vss) if(vss[i]==n) printf "%s", n" \""c[i, color]"\""
+				if(n<7) printf ","; else print ")"
+			}
+			print "\n$data <<EOD"
+		} else {
+			fun["A-Helix"] ="Ha"
+			fun["3-Helix"] ="H3"
+			fun["5-Helix"] ="H5"
+			fun["B-Sheet"] ="Bs"
+			fun["B-Bridge"]="Bb"
+			fun["Turn"]    ="T"
+			fun["Bend"]    ="B"
+			fun["Coil"]    ="C"
+			print "Ha(n)=sprintf(\"set obj %d fc rgb \\\""c["A-Helix" ,color]"\\\" fs solid border lw 1;\", n)"
+			print "H3(n)=sprintf(\"set obj %d fc rgb \\\""c["3-Helix" ,color]"\\\" fs solid border lw 1;\", n)"
+			print "H5(n)=sprintf(\"set obj %d fc rgb \\\""c["5-Helix" ,color]"\\\" fs solid border lw 1;\", n)"
+			print "Bs(n)=sprintf(\"set obj %d fc rgb \\\""c["B-Sheet" ,color]"\\\" fs solid border lw 1;\", n)"
+			print "Bb(n)=sprintf(\"set obj %d fc rgb \\\""c["B-Bridge",color]"\\\" fs solid border lw 1;\", n)"
+			print "T(n) =sprintf(\"set obj %d fc rgb \\\""c["Turn"    ,color]"\\\" fs solid border lw 1;\", n)"
+			print "B(n) =sprintf(\"set obj %d fc rgb \\\""c["Bend"    ,color]"\\\" fs solid border lw 1;\", n)"
+			print "C(n) =sprintf(\"set obj %d fc rgb \\\""c["Coil"    ,color]"\\\" fs solid border lw 1;\", n)"
+	#		Nh=20; dt=2.5*Pi/Nh; t=.5*Pi-dt;
+	#		for(i=0; i<=Nh; i++) {
+	#			t += dt
+	#			Hx[i]=dx*cos(t)/2.5
+	#			Hy[i]=dy*(.5+t/Pi-sin(t))/2
+	#		}
+
+			Nh=20; dt=1/(Nh/2); t=-dt;
+			for(i=0; i<=Nh/2; i++) {
+				t += dt
+				Hy[i]=Hy[Nh-i]=dy*t
+				Hx[i]=Hx[Nh-i]=dx*fx*.5*sin(t*2*Pi)
+			}
+
+			d=0.1; Nt=20; dt=1/(Nt/2); t=-dt
+			for(i=0; i<=Nt/2; i++) {
+				t += dt;
+				Ty[i]=Ty[Nt-i]=dy*t
+				Tx[i]=Tx[Nt-i]=(t<d || t>1-d) ? 0 : dx*fx*(.5*(.5-t)^2/(.5-d)^2-.5)
+			}
+		}
+
+		print "# residue index: "minRes"-"maxRes >file"~count.xvg"
+		print "#      Time("xu")  A-Helix  3-Helix  5-Helix  B-Sheet B-Bridge     Turn     Bend     Coil     Chain_Separator" >file"~count.xvg"
+		n=0
+		for(i=0; i<nx; i++) {
+			ftype["A-Helix"] =0
+			ftype["3-Helix"] =0
+			ftype["5-Helix"] =0
+			ftype["B-Sheet"] =0
+			ftype["B-Bridge"]=0
+			ftype["Turn"]    =0
+			ftype["Bend"]    =0
+			ftype["Coil"]    =0
+			ftype["Chain_Separator"]    =0
+
+			x = x0+i*dx
+			for(j=0; j<ny; j++) {
+				if(minRes<=j+1 && j+1<=maxRes) {
+					y = y0+j*dy
+					txt=substr(zv[ny-1-j], i*ncode+1, ncode)
+					type[j]=v[txt]
+					ftype[v[txt]]++
+				}
+			}
+
+			printf "%15.6f%9d%9d%9d%9d%9d%9d%9d%9d%9d\n", x,
+					 ftype["A-Helix"] ,
+					 ftype["3-Helix"] ,
+					 ftype["5-Helix"] ,
+					 ftype["B-Sheet"] ,
+					 ftype["B-Bridge"],
+					 ftype["Turn"]    ,
+					 ftype["Bend"]    ,
+					 ftype["Coil"],
+					 ftype["Chain_Separator"] >file"~count.xvg"
+
+			for(j=0; j<ny; j++) {
+				if(minRes<=j+1 && j+1<=maxRes) {
+					if(xyz) print x, y0+j*dy, vss[type[j]]
+					else {
+						for(jj=j+1; jj<ny && type[jj]==type[j]; jj++) type[jj]=""
+						if(type[j]) print obj(x, y0+j*dy, y0+(jj-1)*dy, type[j], dx*fx)
+					}
+				}
+			}
+		}
+
+		if(xyz) print "EOD"
+		print ""
+		print "#set tmargin at screen 0.95"
+		print "#set bmargin at screen 0.2"
+		print "#set rmargin at screen 0.85"
+		print "#set label \" A-Helix \" at screen 0.85,0.92 left textcolor rgb \""c["A-Helix" ,color]"\""
+		print "#set label \" 3-Helix \" at screen 0.85,0.82 left textcolor rgb \""c["3-Helix" ,color]"\""
+		print "#set label \" 5-Helix \" at screen 0.85,0.72 left textcolor rgb \""c["5-Helix" ,color]"\""
+		print "#set label \" B-Sheet \" at screen 0.85,0.62 left textcolor rgb \""c["B-Sheet" ,color]"\""
+		print "#set label \" B-Bridge\" at screen 0.85,0.52 left textcolor rgb \""c["B-Bridge",color]"\""
+		print "#set label \" Turn    \" at screen 0.85,0.42 left textcolor rgb \""c["Turn"    ,color]"\""
+		print "#set label \" Bend    \" at screen 0.85,0.32 left textcolor rgb \""c["Bend"    ,color]"\""
+		print "#set label \" Coil    \" at screen 0.85,0.22 left textcolor rgb \""c["Coil"    ,color]"\""
+
+		print "set output \"ss.png\""
+		print "set term pngcairo enhanced truecolor font \"HelveticaNeueLT Pro 85 Hv,85\" fontscale 1 linewidth 20 pointscale 5 size 6000,3033"
+		print "set tics out nomirror;"
+		print "set key out reverse Left spacing 2 samplen 1/2"
+		print "set xl\"Time("xu")\"; set yl\"#res\";"
+		printf "plot ["x0-dx/2":"x0+(nx-1)*dx+dx/2"] ["y0+(minRes-1)*dy":"y0+(maxRes-1)*dy"] "
+		print (xyz)? "$data u 1:2:3 w imag notit, \\" : " -1 notit, \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["A-Helix" ,color]"\" t\"H A-Helix \", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["3-Helix" ,color]"\" t\"G 3-Helix \", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["5-Helix" ,color]"\" t\"I 5-Helix \", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["B-Sheet" ,color]"\" t\"E B-Sheet \", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["B-Bridge",color]"\" t\"B B-Bridge\", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["Turn"    ,color]"\" t\"T Turn    \", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["Bend"    ,color]"\" t\"S Bend    \", \\"
+		print "-1 w p ps 3 pt 5 lc rgb \""c["Coil"    ,color]"\" t\"C Coil    \""
+	}
+
+	function obj(x, y1, y2, type, dx, pos, i,j,k) {
+
+		if(ssmode=="box") {
+			n++
+			x1  =x-dx/2; x2  =x+dx/2
+			y1 -= dy/2; y2 += dy/2
+			return "set obj "n" poly from " \
+			x1","y1" to "x1","y2" to " \
+			x2","y2" to "x2","y1" to "x1","y1"; eval "fun[type]"("n")"
+		}
+
+		if(type=="A-Helix" || type=="3-Helix" || type=="5-Helix") {
+			str=""
+			for(i=y1; i<=y2; i+=dy) {
+				n++
+				str=str"set obj "n" poly from "x+Hx[0]","i+Hy[0]-dy/2
+				for(j=1; j<=Nh; j++) str=str" to "x+Hx[j]","i+Hy[j]-dy/2
+				str=str"; eval "fun[type]"("n")\n"
+			}
+			return str
+		}
+
+		if(type=="Turn") {
+			n++
+			y1 -= dy/2; y2 += dy/2
+			str="set obj "n" poly from "x+Tx[0]","y1+(y2-y1)*Ty[0]
+			for(j=1; j<=Nt; j++) str=str" to "x+Tx[j]","y1+(y2-y1)*Ty[j]
+			return str"; eval T("n")"
+		}
+
+		if(type=="B-Bridge") {
+			n++
+			return "set obj "n" poly from " \
+				x     ","y1-dy/2" to "x","y2-dy/2" to " \
+				x-dx/2","y2-dy/2" to "x","y2     " to " \
+				x     ","y2+dy/2" to "x","y2     " to " \
+				x+dx/2","y2-dy/2" to "x","y2-dy/2" to " \
+				x","y1-dy/2"; eval Bb("n")"
+		}
+
+		if(type=="B-Sheet") {
+			n++
+			return "set obj "n" poly from " \
+				x-dx/4","y1-dy/2" to "x-dx/4","y2-dy/2" to " \
+				x-dx/2","y2-dy/2" to "x     ","y2     " to " \
+				x     ","y2+dy/2" to "x     ","y2     " to " \
+				x+dx/2","y2-dy/2" to "x+dx/4","y2-dy/2" to " \
+				x+dx/4","y1-dy/2" to "x-dx/4","y1-dy/2 \
+				"; eval Bs("n")"
+		}
+
+		if(type=="Bend" || type=="Coil") {
+			n++
+			return "set obj "n" poly from " \
+				x","y1-dy/2" to "x","y2+dy/2" to "x","y1-dy/2 \
+				"; eval "fun[type]"("n")"
+		}
+	}
+	function abs(x) { return x>0 ? x : -x }
+	' $file.xpm > $file~.gpl
+}
+
+function xpm2rgb {
+	Line=$(grep "GROMACS" $file.xpm |wc -l)
+	[[ $Line == 0 ]] && { cp $file.xpm $file~iv.xpm; return; }
+
+	awk -v cm=$cm ' /static/ {
+		print
+		getline; print; n=$3
+		for(i=1; i<=n; i++) {
+			getline; sub(/ \/\* .* \*\//, "")
+			if(length(cm)>0) $3=RGB(cm, i, 1, n, (1+n)/2)
+			print
+		}
+	}
+	/y-axis/,0 {sub(/^\/\* .* \*\//, ""); if(length($0)) print}
+
+	function abs(x)    { return x>=0 ? x : -x  }
+	function min(x, y) { return x<y ? x : y }
+	function max(x, y) { return x>y ? x : y }
+	function nint(x)   { return x>=0 ? int(x+0.5) : int(x-0.5) }
+	function cubic(x, a0, a1, a2, a3) {return a0+a1*x+a2*x*x+a3*x*x*x}
+	function RGB(cm, V, Vmin, Vmax, Vcnt) {
+		x=(V-Vmin)/(Vmax-Vmin)
+		if(V<Vcnt) x=0.5*(V-Vmin)/(Vcnt-Vmin)
+		else       x=0.5*(V-Vcnt)/(Vmax-Vcnt)+0.5
+
+		PI=4*atan2(1,1)
+		if(cm==1 || cm=="rgb1") { # Rainbow http://stackoverflow.com/questions/7706339
+			r=1; g=1; b=1
+			if      (x<0.25) { r = 0;     g = 4*x   }
+			else if (x<0.50) { r = 0;     b = 2-4*x }
+			else if (x<0.75) { r = 4*x-2; b = 0 }
+			else             { g = 4-4*x; b = 0 }
+		} else if(cm==2 || cm=="rgb2") { # Rainbow gnuplot_33/13/10
+			r=abs(2*x-0.5)
+			g=sin(PI*x)
+			b=cos(.5*PI*x)
+		} else if(cm==3 || cm=="rgb3") { # Rainbow gnuplot_26/13/10
+			r=(3*x-1)/2
+			g=sin(PI*x)
+			b=cos(.5*PI*x)
+		} else if(cm==4 || cm=="rgb4") { # Rainbow gnuplot_22/13/-31
+			r=3*x-1; g=sin(PI*x); b=0.84-2*x
+		} else if(cm==5) { # Rainbow Mathmatica
+			r=  x<=0.062745 ? cubic(x,   0.471375,  -2.554017,   -0.603914,   7.812982) : \
+				x<=0.152941 ? cubic(x,   0.292460,   1.809704,  -31.728520, 117.994977) : \
+				x<=0.615686 ? cubic(x,   0.321657,  -1.002195,    3.507752,  -1.465506) : \
+				x<=0.807843 ? cubic(x,   1.060710,  -5.522637,   12.504767,  -7.328945) : \
+				x<=0.933333 ? cubic(x,   0.431446,  -0.873251,    4.037986,  -2.774247) : \
+				x<=1.000000 ? cubic(x,   5.221261, -12.772499,   12.792531,  -4.383959) : 0
+			g=	x<=0.062745 ? cubic(x,   0.108729,   0.152568,   -0.600651,   7.770915) : \
+				x<=0.176471 ? cubic(x,   0.019507,   1.603318,   -1.113349,  12.925571) : \
+				x<=0.364706 ? cubic(x,  -0.087439,   2.477820,    0.408927,  -4.700034) : \
+				x<=0.705882 ? cubic(x,   0.144965,   1.791961,   -0.862001,  -0.770124) : \
+				x<=0.784314 ? cubic(x,  16.562714, -66.930100,   95.145955, -45.549403) : \
+				x<=0.878431 ? cubic(x, -44.677970, 163.297275, -194.114854,  75.927463) : \
+				x<=1.000000 ? cubic(x,   2.436863,  -1.845566,   -0.624881,   0.164628) : 0
+			b=	x<=0.105882 ? cubic(x,   0.526474,   2.243463,    0.792247, -31.571500) : \
+				x<=0.184314 ? cubic(x,   0.026914,  13.337161,  -80.796176, 171.577097) : \
+				x<=0.254902 ? cubic(x,   0.913699,  -1.400599,    7.239935, -13.759153) : \
+				x<=0.556863 ? cubic(x,   0.442544,   4.247120,  -14.052824,  11.110080) : \
+				x<=0.952941 ? cubic(x,   2.960527,  -9.677238,   11.755653,  -4.927506) : \
+				x<=1.000000 ? cubic(x,   0.585773,  -0.453645,    0.000000,  -0.000000) : 0
+		} else if(cm==6) { # DarkRainbow Mathmatica
+			r=	x<=0.309804 ? cubic(x,   0.236537,   0.246053,   -1.136582,   3.202751) : \
+				x<=0.407843 ? cubic(x,  -1.510327,  13.561592,  -35.298055,  33.624234) : \
+				x<=0.603922 ? cubic(x,  -0.599178,   2.859926,   -0.741459,  -0.178725) : \
+				x<=0.701961 ? cubic(x,   3.197059, -12.278383,   20.066775, -10.373348) : \
+				x<=0.901961 ? cubic(x,   0.468624,   2.127260,   -2.783342,   0.824166) : \
+				x<=1.000000 ? cubic(x,   0.729870,   0.000000,   -0.000000,   0.000000) : 0
+			g=	x<=0.109804 ? cubic(x,   0.339471,   0.168823,   -3.598735,  26.873972) : \
+				x<=0.309804 ? cubic(x,   0.218689,   1.512175,   -3.197075,   3.440555) : \
+				x<=0.458824 ? cubic(x,  -0.261191,   5.401505,  -14.030694,  14.113778) : \
+				x<=0.603922 ? cubic(x,  -1.534715,  10.091878,  -15.985773,   9.257180) : \
+				x<=0.701961 ? cubic(x,   4.759391, -17.980549,   27.364646, -14.145868) : \
+				x<=0.815686 ? cubic(x,  18.275342, -66.730000,   86.570221, -38.633344) : \
+				x<=0.901961 ? cubic(x, -19.096521,  74.250435,  -90.514567,  35.431661) : \
+				x<=1.000000 ? cubic(x,   0.239399,   0.000000,   -0.000000,   0.000000) : 0
+			b=	x<=0.101961 ? cubic(x,   0.575370,  -0.214218,    1.381410, -10.814899) : \
+				x<=0.239216 ? cubic(x,   0.620844,   0.637717,  -16.547215,  37.635934) : \
+				x<=0.329412 ? cubic(x,  -1.404892,  21.875973,  -87.291389, 110.089969) : \
+				x<=0.443137 ? cubic(x,  -1.127449,  12.499131,  -36.589253,  34.785129) : \
+				x<=0.717647 ? cubic(x,   0.971421,  -4.438096,    8.640928,  -5.173692) : \
+				x<=0.847059 ? cubic(x,  12.089098, -46.895840,   62.535294, -27.917903) : \
+				x<=0.929412 ? cubic(x, -64.437519, 225.686918, -261.540385, 100.686232) : \
+				x<=1.000000 ? cubic(x,   0.230961,   0.000000,   -0.000000,   0.000000) : 0
+		} else if(cm==7) { # Rainbow CETR2
+			r=	x<=0.137255 ? cubic(x,  -0.000316,    0.038887,   -0.883031,    5.101004) : \
+				x<=0.203922 ? cubic(x,  -4.023305,   61.355168, -303.724536,  513.861584) : \
+				x<=0.305882 ? cubic(x,  -1.622921,   20.396258,  -74.241922,   90.162344) : \
+				x<=0.396078 ? cubic(x,   8.471779,  -73.154898,  211.089180, -195.491355) : \
+				x<=0.623529 ? cubic(x,  -0.543610,    2.677936,   -0.137169,   -0.445552) : \
+				x<=0.749020 ? cubic(x, -15.225713,   68.550324,  -96.645216,   45.458704) : \
+				x<=1.000000 ? cubic(x,   2.274626,   -4.643168,    5.626198,   -2.267654) : 0
+			g=	x<=0.207843 ? cubic(x,   0.204965,    2.709276,   -7.313826,    9.194078) : \
+				x<=0.396078 ? cubic(x,   0.376606,    0.109729,    4.680670,   -7.355355) : \
+				x<=0.619608 ? cubic(x,   0.865401,   -1.956191,    5.447395,   -3.937938) : \
+				x<=0.760784 ? cubic(x,  -8.802577,   42.865907,  -62.175709,   29.088263) : \
+				x<=0.992157 ? cubic(x,   7.266933,  -22.020637,   25.525012,  -10.575381) : \
+				x<=1.000000 ? cubic(x, -17.632920,   38.955075,  -21.133125,    0.000000) : 0
+			b=	x<=0.203922 ? cubic(x,   0.963162,   -2.861736,    0.251083,    4.557713) : \
+				x<=0.313725 ? cubic(x,   0.656233,    0.043612,   -5.790983,    0.106573) : \
+				x<=0.400000 ? cubic(x,  17.430800, -140.294221,  376.158694, -334.690862) : \
+				x<=0.631373 ? cubic(x,   0.328764,   -2.247241,    5.614561,   -3.859553) : \
+				x<=0.968627 ? cubic(x,  -0.646066,    4.007488,   -5.858817,    2.485090) : \
+				x<=1.000000 ? cubic(x,  -0.000000,    0.000000,   -0.000000,    0.000000) : 0
+		} else if(cm==8) { # viridis python
+			r=	x<=0.455523 ? cubic(x,   0.282113,     0.585552,   -3.199668,    3.273305) : \
+				x<=0.700880 ? cubic(x,  -2.797136,    18.565436,  -37.531934,   24.521874) : \
+				x<=1.000000 ? cubic(x,   4.563142,   -18.410284,   23.559766,   -8.759172) : 0
+			g=	x<=0.074291 ? cubic(x,  -0.000438,    -0.351490,   48.354922, -360.945985) : \
+				x<=0.702835 ? cubic(x,  -0.014997,     1.564580,   -1.154700,    0.700928) : \
+				x<=1.000000 ? cubic(x,  -0.960756,     4.427797,   -3.482215,    0.926468) : 0
+			b=	x<=0.476051 ? cubic(x,   0.327782,     1.734561,   -4.300750,    3.500006) : \
+				x<=0.932551 ? cubic(x,   0.218208,     1.243982,   -0.736753,   -0.849211) : \
+				x<=1.000000 ? cubic(x, 348.076269, -1047.336499, 1048.282355, -348.910600) : 0
+		} else if(cm==9) { # BlueGreenYellow
+			r=	x<=0.250980 ? cubic(x,  0.121646, -0.172462,  -1.127437,   5.431302) : \
+				x<=0.392157 ? cubic(x, -0.131357,  2.516024,  -9.597266,  12.395703) : \
+				x<=0.556863 ? cubic(x, -1.492039, 10.422082, -22.967599,  17.609067) : \
+				x<=0.713725 ? cubic(x, -5.895145, 28.778858, -46.038523,  25.322913) : \
+				x<=0.847059 ? cubic(x, -8.586891, 32.582707, -40.596624,  17.627591) : \
+				x<=1.000000 ? cubic(x, -1.142666,  2.057658,  -0.000297,   0.000113) : 0
+			g=	x<=0.250980 ? cubic(x,  0.009478,  1.567212,   1.134523,  -5.465413) : \
+				x<=0.392157 ? cubic(x,  0.263542, -1.131873,   9.632994, -12.442064) : \
+				x<=0.592157 ? cubic(x,  0.200958,  0.462406,   1.933537,  -2.125990) : \
+				x<=1.000000 ? cubic(x, -0.091472,  2.264930,  -1.894472,   0.618395) : 0
+			b=	x<=0.188235 ? cubic(x,  0.399324,  0.574092,   1.663684,  -7.302784) : \
+				x<=0.407843 ? cubic(x,  0.584562, -1.180634,   5.786781,  -7.789910) : \
+				x<=1.000000 ? cubic(x,  0.380303,  1.004679,  -1.825543,   0.793271) : 0
+		} else if(cm==10) { # parula matlab
+			r=	x<=0.115347 ? cubic(x,   0.209319,   0.021835,    8.049552,-184.003036) : \
+				x<=0.184751 ? cubic(x,   2.374031, -44.761896,  276.704512,-556.160051) : \
+				x<=0.317693 ? cubic(x,  -0.399346,   3.459321,   -4.534020,  -6.611694) : \
+				x<=0.447703 ? cubic(x,  -2.173981,  20.360889,  -61.942289,  62.029278) : \
+				x<=0.675464 ? cubic(x,   4.243855, -25.971352,   50.451225, -29.381695) : \
+				x<=0.840665 ? cubic(x,   1.758620,  -8.829890,   15.820527,  -7.604765) : \
+				x<=1.000000 ? cubic(x, -47.324025, 160.987718, -178.222332,  65.537864) : 0
+			g=	x<=0.122190 ? cubic(x,   0.166515,   1.467473,   -0.294203,  23.661735) : \
+				x<=0.328446 ? cubic(x,   0.142739,   2.829204,   -8.770193,  13.750274) : \
+				x<=0.695015 ? cubic(x,   0.308801,   0.881104,    0.574870,  -1.368778) : \
+				x<=0.842620 ? cubic(x, -14.989531,  63.658741,  -85.592272,  38.217482) : \
+				x<=1.000000 ? cubic(x, -14.773917,  50.485538,  -55.874747,  21.147001) : 0
+			b=	x<=0.109482 ? cubic(x,   0.530296,   2.857383,    6.806557, -41.144233) : \
+				x<=0.232649 ? cubic(x,   0.465835,   7.313556,  -40.797955,  70.197547) : \
+				x<=0.384164 ? cubic(x,   1.953887, -11.423272,   39.003550, -44.999622) : \
+				x<=0.675464 ? cubic(x,  -0.247051,   7.832808,  -17.887612,  11.458347) : \
+				x<=0.862170 ? cubic(x,   9.308603, -35.135626,   47.027607, -21.482656) : \
+				x<=1.000000 ? cubic(x,  14.096229, -43.850498,   47.004022, -17.195887) : 0
+		} else if(cm==11) { # avocado
+			r=	x<=0.254902 ? cubic(x, -0.000315,  0.019821, -0.238792,  0.738267) : \
+				x<=0.521569 ? cubic(x, -0.384667,  1.975454, -2.290351,  2.092677) : \
+				x<=0.784314 ? cubic(x,  0.251672, -2.065961,  5.852542, -3.112441) : \
+				x<=1.000000 ? cubic(x, -0.264265,  1.264787, -0.000831,  0.000310) : 0
+			g=	x<=0.258824 ? cubic(x,  0.000502,  1.740189,  0.372609, -1.140405) : \
+				x<=0.521569 ? cubic(x,  0.294585,  0.168953,  2.224051, -2.019746) : \
+				x<=1.000000 ? cubic(x,  0.427054,  0.465070,  0.118419, -0.025793) : 0
+			b=	x<=0.407843 ? cubic(x, -0.000319,  0.297254,  0.186624, -0.857099) : \
+				x<=0.886275 ? cubic(x, -0.121618,  1.027933, -1.611968,  0.962846) : \
+				x<=1.000000 ? cubic(x, -0.107974,  0.338385,  0.000000, -0.000000) : 0
+		} else if(cm==12) { # Diverging-CoolWarm http://www.kennethmoreland.com/color-maps/
+			r=	x<=0.616813 ? cubic(x,    0.337271,     0.983489,    0.747265,    -1.195076) : \
+				x<=1.000000 ? cubic(x,   -0.632934,     5.066503,   -4.609700,     0.870305) : 0
+			g=	x<=0.522972 ? cubic(x,    0.283621,     1.787108,   -0.273675,    -1.969690) : \
+				x<=0.953079 ? cubic(x,    0.509720,     2.032810,   -2.808791,     0.356746) : \
+				x<=1.000000 ? cubic(x, 1127.813666, -3504.201247, 3632.816785, -1256.425801) : 0
+			b=	x<=0.577713 ? cubic(x,    0.753360,     1.710547,   -2.941316,    -0.067188) : \
+				x<=1.000000 ? cubic(x,    1.240366,     0.386625,   -3.038613,     1.566723) : 0
+		} else if(cm==13) { # thermometer
+			r=	x<=0.125490 ? cubic(x,   0.162174,   1.201690,  -6.399066,  51.243518) : \
+				x<=0.431373 ? cubic(x,   0.148005,   0.893940,   4.075881,  -6.121149) : \
+				x<=0.549020 ? cubic(x,  -4.033245,  27.676482, -53.245771,  34.957323) : \
+				x<=0.682353 ? cubic(x,   6.764309, -30.526849,  52.649881, -30.087859) : \
+				x<=0.823529 ? cubic(x,  -9.803570,  42.258774, -54.801709,  23.209690) : \
+				x<=0.964706 ? cubic(x,  11.780482, -36.707047,  42.042428, -16.601556) : \
+				x<=1.000000 ? cubic(x,   2.266182,  -1.864046,   0.199584,  -0.067639) : 0
+			g=	x<=0.149020 ? cubic(x,   0.120337,   2.121807,  -1.069806,  14.995654) : \
+				x<=0.274510 ? cubic(x,  -0.223638,   7.153696, -21.865513,  31.179040) : \
+				x<=0.372549 ? cubic(x,   1.546500,  -9.998720,  36.221021, -38.417792) : \
+				x<=0.466667 ? cubic(x,   4.898614, -30.601930,  76.109977, -61.896098) : \
+				x<=0.576471 ? cubic(x,  10.130934, -54.795573, 108.692312, -72.115484) : \
+				x<=0.670588 ? cubic(x,  15.937621, -74.007429, 122.359430, -68.317410) : \
+				x<=0.776471 ? cubic(x,   4.301756, -14.376467,  21.324263, -11.667634) : \
+				x<=0.960784 ? cubic(x, -11.106730,  45.205518, -56.022964,  22.036255) : \
+				x<=1.000000 ? cubic(x,   1.807516,  -1.709471,  -0.019174,   0.006442) : 0
+			b=	x<=0.133333 ? cubic(x,   0.794128,   0.966570,   4.388059, -37.453981) : \
+				x<=0.286275 ? cubic(x,   0.720815,   2.417972,  -8.750889,  10.817765) : \
+				x<=0.419608 ? cubic(x,   1.358732,  -3.883291,  12.716874, -14.600037) : \
+				x<=1.000000 ? cubic(x,   0.636442,   2.380296,  -5.193566,   2.345535) : 0
+		} else if(cm==14) { # redbluetones
+			r=	x<=0.274510 ? cubic(x,  0.449268,    1.574639,  -0.822878,   -1.491296) : \
+				x<=0.403922 ? cubic(x, -0.288228,    8.474660, -22.200837,   20.561929) : \
+				x<=0.509804 ? cubic(x,  3.707488,  -19.016191,  42.456321,  -31.670207) : \
+				x<=0.635294 ? cubic(x,  9.680930,  -46.704589,  83.339750,  -50.422752) : \
+				x<=0.878431 ? cubic(x, -2.137951,   13.824286, -20.185904,    8.656232) : \
+				x<=1.000000 ? cubic(x, 34.681746, -106.281568, 110.295455,  -38.557173) : 0
+			g=	x<=0.113725 ? cubic(x,  0.156994,    1.203165,  -4.497128,   33.013271) : \
+				x<=0.321569 ? cubic(x,  0.143463,    0.889417,   4.005165,   -5.745487) : \
+				x<=0.435294 ? cubic(x,  2.876165,  -21.447213,  64.655291,  -60.582508) : \
+				x<=0.529412 ? cubic(x, 10.474115,  -64.301217, 140.750865, -101.324183) : \
+				x<=0.635294 ? cubic(x, 11.899055,  -59.479146, 106.631277,  -63.671925) : \
+				x<=0.752941 ? cubic(x,  3.869591,  -13.953571,  22.184265,  -12.226311) : \
+				x<=0.905882 ? cubic(x, -7.963197,   32.488971, -39.126611,   15.003588) : \
+				x<=1.000000 ? cubic(x,  2.422365,   -2.104851,  -0.009003,    0.003156) : 0
+			b=	x<=0.184314 ? cubic(x,  0.219042,    0.690306,   0.608545,    2.946494) : \
+				x<=0.529412 ? cubic(x,  0.260646,    0.314043,   2.383175,   -2.250743) : \
+				x<=0.639216 ? cubic(x,  8.263630,  -42.062465,  77.213158,  -46.359035) : \
+				x<=0.741176 ? cubic(x, 11.232975,  -48.568134,  75.137634,  -38.554181) : \
+				x<=0.850980 ? cubic(x,  4.206315,  -14.675529,  21.410637,  -10.502424) : \
+				x<=0.929412 ? cubic(x, 72.226097, -246.169093, 283.448543, -109.133180) : \
+				x<=1.000000 ? cubic(x,  2.153883,   -1.589228,  -0.021327,    0.007324) : 0
+		} else if(cm==15) { # tmap
+			r=	x<=0.184314 ? cubic(x,  0.178983,   1.552415,  -0.207975,   5.223602) : \
+				x<=0.341176 ? cubic(x,  0.066012,   2.264477,   0.673474,  -2.095856) : \
+				x<=0.447059 ? cubic(x,  4.749953, -33.884109,  94.216232, -83.714029) : \
+				x<=0.670588 ? cubic(x, -0.868992,   8.918165, -14.178095,   7.483969) : \
+				x<=1.000000 ? cubic(x, -0.109994,   4.838318,  -6.513456,   2.604411) : 0
+			g=	x<=0.184314 ? cubic(x,  0.303925,   1.772992,  -2.122434,   6.139617) : \
+				x<=0.349020 ? cubic(x,  0.277610,   1.481387,   2.270264,  -4.510611) : \
+				x<=0.450980 ? cubic(x,  4.078043, -27.598191,  76.434953, -67.732938) : \
+				x<=0.666667 ? cubic(x, -0.655808,   8.086928, -13.137827,   7.055502) : \
+				x<=0.756863 ? cubic(x, 17.528872, -67.906478,  94.487329, -44.770083) : \
+				x<=0.921569 ? cubic(x,  4.773772, -10.130974,   9.493433,  -3.915789) : \
+				x<=1.000000 ? cubic(x,  3.920833,  -3.780528,  -0.009403,   0.003226) : 0
+			b=	x<=0.419608 ? cubic(x,  0.935393,   0.005125,   0.678124,  -0.845400) : \
+				x<=0.505882 ? cubic(x,  6.416300, -34.137703,  72.988688, -53.484807) : \
+				x<=0.588235 ? cubic(x, 11.099459, -52.804586,  93.846613, -57.963352) : \
+				x<=0.666667 ? cubic(x,  2.844359,  -3.625769,  -0.006251,   0.003290) : \
+				x<=0.752941 ? cubic(x, -6.371378,  32.213485, -48.309479,  22.921856) : \
+				x<=1.000000 ? cubic(x,  1.358718,  -2.895860,   2.697215,  -0.996030) : 0
+		} else if(cm==16) { # ltmap
+			r=	x<=0.533333 ? cubic(x,   0.163818,    1.791632,   -0.273066,   -0.474513) : \
+				x<=0.568627 ? cubic(x, 132.161025, -731.752508, 1358.253910, -838.937696) : \
+				x<=1.000000 ? cubic(x,   0.374538,    2.632874,   -3.441293,    1.279874) : 0
+			g=	x<=0.121569 ? cubic(x,   0.283064,    2.509624,    3.097213,  -20.814460) : \
+				x<=0.262745 ? cubic(x,   0.526602,   -1.130885,   18.376538,  -36.628242) : \
+				x<=0.368627 ? cubic(x,   1.975347,  -13.981096,   52.456257,  -59.971000) : \
+				x<=0.482353 ? cubic(x,   4.081605,  -24.751935,   63.659714,  -53.109146) : \
+				x<=0.607843 ? cubic(x,   3.013910,  -12.490787,   25.671804,  -17.528325) : \
+				x<=0.698039 ? cubic(x,  22.796447, -103.139979,  163.020009,  -86.219083) : \
+				x<=0.815686 ? cubic(x,  21.113658,  -80.795116,  108.914800,  -49.613536) : \
+				x<=0.933333 ? cubic(x,  21.071994,  -69.419374,   80.770813,  -32.128173) : 0
+				x<=1.000000 ? cubic(x,   2.643322,   -2.266569,   -0.011028,    0.003803) : \
+			b=	x<=0.450980 ? cubic(x,   0.936797,    0.075986,    0.411047,   -0.704823) : \
+				x<=0.909804 ? cubic(x,   1.411502,   -0.307129,   -1.841263,    0.895902) : \
+				x<=1.000000 ? cubic(x,   1.269224,   -1.085101,    0.010742,   -0.003716) : 0
+		} else if(cm==17) { # cividis
+			r=	x<=0.121569 ? cubic(x,    -0.000426,     0.060312,     -1.553906,   10.160156) : \
+				x<=0.196078 ? cubic(x,    -1.982815,    32.605251,   -172.417296,  319.227164) : \
+				x<=0.666667 ? cubic(x,    -0.133935,     2.107203,     -2.734498,    2.026416) : \
+				x<=0.988235 ? cubic(x,     0.321580,    -0.218041,      1.387263,   -0.470313) : \
+				x<=1.000000 ? cubic(x,     1.000001,    -0.000002,      0.000002,   -0.000001) : 0
+			g=	x<=1.000000 ? cubic(x,     0.125938,     0.709731,     -0.053306,    0.135030) : 0
+			b=	x<=0.078431 ? cubic(x,     0.302000,     1.452622,      8.254845,  -63.440633) : \
+				x<=0.509804 ? cubic(x,     0.463205,    -0.353857,      0.722687,    0.040738) : \
+				x<=0.976471 ? cubic(x,     0.546672,    -0.581206,      1.466601,   -1.184898) : \
+				x<=0.992157 ? cubic(x, -6481.511854, 19864.890017, -20291.986582, 6908.908418) : \
+				x<=1.000000 ? cubic(x,    15.165100,   -31.148250,     16.256250,    0.000000) : 0
+		} else if(cm==18) { # inferno
+			r=	x<=0.278431 ? cubic(x,    0.000616,     0.181010,     8.784927,   -16.254186) : \
+				x<=0.835294 ? cubic(x,    0.071163,     0.487649,     3.088135,    -2.832459) : \
+				x<=0.972549 ? cubic(x,  -35.687813,   123.643703,  -138.466305,    51.482349) : \
+				x<=1.000000 ? cubic(x,  118.864658,  -346.470291,   337.712706,  -109.118711) : 0
+			g=	x<=0.160784 ? cubic(x,   -0.000172,     0.233600,     5.737230,   -36.119561) : \
+				x<=0.372549 ? cubic(x,    0.281181,    -3.267615,    13.347637,   -15.212603) : \
+				x<=0.737255 ? cubic(x,    0.074037,     0.082848,    -0.311773,     1.415728) : \
+				x<=0.980392 ? cubic(x,    4.496346,   -17.261553,    22.700021,    -8.926780) : \
+				x<=1.000000 ? cubic(x,  -48.680714,   144.190704,  -140.418049,    45.906423) : 0
+			b=	x<=0.168627 ? cubic(x,    0.012518,     1.598834,     9.459394,   -36.477360) : \
+				x<=0.411765 ? cubic(x,   -0.026832,     3.918837,   -10.497266,     8.501689) : \
+				x<=0.768627 ? cubic(x,    0.028600,     2.810090,    -5.762656,     2.712918) : \
+				x<=0.878431 ? cubic(x,   67.254062,  -239.175364,   281.322381,  -109.217866) : \
+				x<=0.984314 ? cubic(x,   48.249808,  -153.577768,   160.185899,   -54.202907) : \
+				x<=1.000000 ? cubic(x,  -11.485235,    17.975087,    -3.061272,    -2.783656) : 0
+		} else if(cm==19) { # magma
+			r=	x<=0.247059 ? cubic(x,    0.000271,     0.278879,     6.004937,    -8.162905) : \
+				x<=0.615686 ? cubic(x,    0.025335,     0.775511,     1.932576,    -1.465223) : \
+				x<=0.972549 ? cubic(x,   -2.808277,    12.812626,   -14.315520,     5.304693) : \
+				x<=1.000000 ? cubic(x,    2.643449,    -4.614285,     4.339690,    -1.381797) : 0
+			g=	x<=0.184314 ? cubic(x,   -0.000638,     0.266663,     5.739256,   -29.239602) : \
+				x<=0.403922 ? cubic(x,    0.421904,    -4.277433,    15.597475,   -16.366417) : \
+				x<=0.717647 ? cubic(x,   -0.792888,     5.506012,   -11.062251,     8.150197) : \
+				x<=1.000000 ? cubic(x,   -1.225919,     3.001718,    -1.168042,     0.383598) : 0
+			b=	x<=0.180392 ? cubic(x,    0.011535,     1.658287,     5.198221,   -12.392081) : \
+				x<=0.380392 ? cubic(x,   -0.406976,     7.975221,   -23.376430,    23.001029) : \
+				x<=0.654902 ? cubic(x,   -0.110203,     3.653996,    -6.568599,     3.208048) : \
+				x<=0.984314 ? cubic(x,    6.066511,   -20.284227,    22.862804,    -7.900281) : \
+				x<=1.000000 ? cubic(x,  -79.190218,   238.092163,  -238.285225,    80.132784) : 0
+		} else if(cm==20) { # plasma
+			r=	x<=0.149020 ? cubic(x,     0.053555,     2.803442,   -11.132236,    34.980297) : \
+				x<=0.796078 ? cubic(x,     0.061463,     1.996474,    -1.062348,     0.024568) : \
+				x<=1.000000 ? cubic(x,    -0.861495,     4.340974,    -2.518960,    -0.022154) : 0
+			g=	x<=0.235294 ? cubic(x,     0.027025,    -0.084947,    -0.961318,     3.749874) : \
+				x<=0.423529 ? cubic(x,     0.463271,    -5.279437,    18.143049,   -17.011311) : \
+				x<=1.000000 ? cubic(x,    -0.288618,     1.299266,    -0.636914,     0.604317) : 0
+			b=	x<=0.392157 ? cubic(x,     0.530119,     1.080709,    -1.909092,    -1.533977) : \
+				x<=0.878431 ? cubic(x,     0.954945,    -1.020016,     0.097473,     0.022702) : \
+				x<=0.992157 ? cubic(x,    48.742918,  -153.154434,   160.670671,   -56.107107) : \
+				x<=1.000000 ? cubic(x,  -118.047093,   239.287425,  -121.109006,     0.000000) : 0
+		}
+
+		r=min(max(nint(r*255),0), 255)
+		g=min(max(nint(g*255),0), 255)
+		b=min(max(nint(b*255),0), 255)
+		return sprintf("#%02X%02X%02X", r, g, b)
+	} ' $file.xpm > $file~iv.xpm
+}
+
+usage="\
+>>>>>>>>>>>>>>>>     xpm2all    <<<<<<<<<<<<<<<<
+>>>>>>>>>>>>>>>>    Jicun Li    <<<<<<<<<<<<<<<<
+>>>>>>>>>>     2021-06-19 08:55:55     <<<<<<<<<
+Usage:   xpm2all <File> [-xyz|-mat|-rgb <cm>|-gpl <ssmode> <color> <minRes> <maxRes> <yminRes> ]
+Default: xpm2all <File>  -xyz
+option:  -xyz: xyz datafile
+         -mat: matrix datafile
+         -rgb: regular xpm file with
+               colormap cm
+                         1:  Rainbow
+                         2:  Rainbow gnuplot_33/13/10
+                         3:  Rainbow gnuplot_26/13/10
+                         4:  Rainbow gnuplot_22/13/-31
+                         5:  Rainbow Mathmatica
+                         6:  DarkRainbow Mathmatica
+                         7:  Rainbow CETR2
+                         8:  viridis python
+                         9:  BlueGreenYellow
+                        10:  parula matlab
+                        11:  avocado
+                        12:  Diverging-CoolWarm
+                        13:  thermometer
+                        14:  redbluetones
+                        15:  tmap
+                        16:  ltmap
+                        17:  cividis
+                        18:  inferno
+                        19:  magma
+                        20:  plasma
+         -gpl: gnuplot file to plot 2nd structure
+               ssmode:  draw method
+                        xyz:   xyz data
+                        box:   plain box
+                        fancy: fancy helix and beta sheet
+               color:   gmx, pdb, p1, p2
+               minRes:  initial index of residue
+               maxRes:  final   index of residue
+               yminRes: y value of initial residue"
+
+[[ $# -lt 1 ]] && { echo "$usage"; exit; }
+
+opt=($@); N=${#opt[@]};
+job=xyzmat; dat=xyz; cm=1;
+minRes=1; maxRes=1E9; yminRes=1; ssmode="xyz"; color="pdb"
+
+for((i=0; i<N; i++)); do
+	arg=${opt[$i]};
+	[[ $arg =~ (-xyz)|(-mat) ]] && { dat=${arg/-/}; opt[$i]=""; }
+	[[ $arg =~ -rgb ]] && {
+		job=${arg/-/}; opt[$i]="";
+		j=$((i+1)); [[ $j -lt $N ]] && { cm=${opt[$j]}; opt[$j]=""; }
+	}
+	[[ $arg =~ -gpl ]] && {
+		job=${arg/-/}; opt[$i]="";
+		j=$((i+1)); [[ $j -lt $N ]] && { ssmode=${opt[$j]};  opt[$j]=""; }
+		j=$((i+2)); [[ $j -lt $N ]] && { color=${opt[$j]};   opt[$j]=""; }
+		j=$((i+3)); [[ $j -lt $N ]] && { minRes=${opt[$j]};  opt[$j]=""; }
+		j=$((i+4)); [[ $j -lt $N ]] && { maxRes=${opt[$j]};  opt[$j]=""; }
+		j=$((i+5)); [[ $j -lt $N ]] && { yminRes=${opt[$j]}; opt[$j]=""; }
+	}
+done
+
+file=${opt[@]%.xpm}
+xpm2$job
